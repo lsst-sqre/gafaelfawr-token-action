@@ -1,0 +1,44 @@
+name: 'Gafaelfawr Token'
+description: 'Obtain a short-lived Gafaelfawr token for a Rubin Science Platform or Roundtable environment with GitHub Actions OIDC.'
+author: 'Rubin Observatory / SQuaRE'
+branding:
+  icon: 'key'
+  color: 'blue'
+inputs:
+  base-url:
+    description: |-
+      Base URL of the Phalanx environment to get a token for, such as
+      `https://roundtable.lsst.cloud`. The action exchanges the job's GitHub
+      Actions OIDC ID token with the Gafaelfawr of this environment (located
+      through Repertoire service discovery), so the job needs the
+      `id-token: write` permission.
+    required: true
+  scopes:
+    description: |-
+      Scopes to request for the token, separated by spaces, commas, or
+      newlines. They must be a subset of the scopes of the GitHub project
+      registered for this repository in Gafaelfawr. When omitted, the token
+      receives every scope of the project.
+    required: false
+    default: ''
+  audience:
+    description: |-
+      Audience of the GitHub OIDC ID token. Defaults to the origin of
+      `base-url`, which is what Gafaelfawr expects unless the environment's
+      administrators configured a different audience.
+    required: false
+    default: ''
+outputs:
+  token:
+    description: |-
+      The Gafaelfawr token, masked in the job log. Use it in later steps of
+      the same job; GitHub does not pass masked values between jobs.
+  scopes:
+    description: 'Space-separated scopes the token carries.'
+  expires-in:
+    description: 'Lifetime of the token in seconds, counted from when it was issued.'
+  expires-at:
+    description: 'Time at which the token expires, as an ISO 8601 UTC timestamp.'
+runs:
+  using: 'node24'
+  main: 'dist/index.js'
