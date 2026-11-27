@@ -20631,7 +20631,23 @@ function parseOAuthError(body) {
   };
 }
 function messageOf(err) {
-  return err instanceof Error ? err.message : String(err);
+  if (!(err instanceof Error)) return String(err);
+  const cause = describeCause(err.cause);
+  return cause ? `${err.message}: ${cause}` : err.message;
+}
+function describeCause(cause) {
+  if (cause === void 0 || cause === null) return "";
+  if (typeof cause !== "object") return String(cause);
+  const code = property(cause, "code");
+  const ownMessage = property(cause, "message");
+  const errors = property(cause, "errors");
+  let message = typeof ownMessage === "string" ? ownMessage : "";
+  if (message === "" && Array.isArray(errors)) {
+    message = [...new Set(errors.map(describeCause).filter(Boolean))].join("; ");
+  }
+  if (typeof code !== "string" || code === "") return message;
+  if (message === "") return code;
+  return message.includes(code) ? message : `${code}: ${message}`;
 }
 
 // src/inputs.ts

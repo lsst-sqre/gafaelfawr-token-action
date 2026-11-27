@@ -276,6 +276,31 @@ function parseOAuthError(body: unknown): { error?: string; description?: string 
   };
 }
 
+/**
+ * Describe an error together with its `cause`. Node's fetch reports every
+ * network failure as `fetch failed` and puts the real error (DNS, TLS,
+ * refused connection) in the cause.
+ */
 function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  if (!(err instanceof Error)) return String(err);
+  const cause = describeCause(err.cause);
+  return cause ? `${err.message}: ${cause}` : err.message;
+}
+
+/** The code and message of an error's cause; empty if there is nothing to add. */
+function describeCause(cause: unknown): string {
+  if (cause === undefined || cause === null) return '';
+  if (typeof cause !== 'object') return String(cause);
+  const code = property(cause, 'code');
+  const ownMessage = property(cause, 'message');
+  const errors = property(cause, 'errors');
+  let message = typeof ownMessage === 'string' ? ownMessage : '';
+  // A refused connection to a dual-stack host is an AggregateError with an
+  // empty message and one error per address tried.
+  if (message === '' && Array.isArray(errors)) {
+    message = [...new Set(errors.map(describeCause).filter(Boolean))].join('; ');
+  }
+  if (typeof code !== 'string' || code === '') return message;
+  if (message === '') return code;
+  return message.includes(code) ? message : `${code}: ${message}`;
 }

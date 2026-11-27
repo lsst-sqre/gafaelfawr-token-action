@@ -299,6 +299,58 @@ describe('exchangeGitHubToken', () => {
     await expect(result).rejects.toThrow(/Could not reach Gafaelfawr/);
   });
 
+  describe('when fetch fails', () => {
+    /** A fetch that fails the way Node's does, with the real error as the cause. */
+    function failingFetch(cause?: unknown): typeof globalThis.fetch {
+      return async () => {
+        throw new TypeError('fetch failed', cause === undefined ? undefined : { cause });
+      };
+    }
+
+    function networkError(code: string, message: string) {
+      return Object.assign(new Error(message), { code });
+    }
+
+    it('reports the cause of a network failure', async () => {
+      const cause = networkError('ENOTFOUND', 'getaddrinfo ENOTFOUND example.test');
+      const result = exchange({ fetchImpl: failingFetch(cause) });
+      await expect(result).rejects.toBeInstanceOf(AuthError);
+      // The code is not repeated when the cause's message already names it.
+      await expect(result).rejects.toThrow(
+        `Could not reach Gafaelfawr at \`${EXCHANGE_URL}\`: fetch failed: getaddrinfo ENOTFOUND example.test. Check the \`base-url\` input`,
+      );
+      expect(vi.mocked(core.info)).toHaveBeenCalledWith(
+        expect.stringContaining('(fetch failed: getaddrinfo ENOTFOUND example.test); assuming'),
+      );
+    });
+
+    it.each([
+      [
+        'a code its message does not name',
+        networkError('CERT_HAS_EXPIRED', 'certificate has expired'),
+        'fetch failed: CERT_HAS_EXPIRED: certificate has expired.',
+      ],
+      [
+        'an aggregate of the addresses tried',
+        Object.assign(
+          new AggregateError(
+            [
+              networkError('ECONNREFUSED', 'connect ECONNREFUSED ::1:443'),
+              networkError('ECONNREFUSED', 'connect ECONNREFUSED 127.0.0.1:443'),
+            ],
+            '',
+          ),
+          { code: 'ECONNREFUSED' },
+        ),
+        'fetch failed: connect ECONNREFUSED ::1:443; connect ECONNREFUSED 127.0.0.1:443.',
+      ],
+      ['a cause that is not an Error', 'socket hang up', 'fetch failed: socket hang up.'],
+      ['no cause', undefined, 'fetch failed. Check'],
+    ])('reports a failure with %s', async (_case, cause, expected) => {
+      await expect(exchange({ fetchImpl: failingFetch(cause) })).rejects.toThrow(expected);
+    });
+  });
+
   it('rejects a success response without a token', async () => {
     server.use(http.post(EXCHANGE_URL, () => HttpResponse.json({ token_type: 'Bearer' })));
     await expect(exchange()).rejects.toThrow(/without an `access_token`/);
