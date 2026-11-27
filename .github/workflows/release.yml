@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify dist/ matches source
+        run: |
+          pnpm build
+          if ! git diff --exit-code dist/; then
+            echo "::error::dist/ is out of sync with src/. Cannot release."
+            exit 1
+          fi
+
+      # The changelog entry is collected locally with `scriv collect` and
+      # committed before tagging (see "Releasing" in README.md). This step
+      # only verifies that happened and extracts the entry for the release.
+      - name: Verify and extract changelog notes
+        id: changelog
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+
+          fragments="$(find changelog.d -maxdepth 1 -type f ! -name '_*' ! -name 'scriv.ini')"
+          if [ -n "$fragments" ]; then
+            echo "::error::Uncollected changelog fragments remain in changelog.d/. Run 'uvx scriv collect --version $VERSION' and commit before tagging."
+            echo "$fragments"
+            exit 1
+          fi
+
+          if ! grep -Eq "^## ${VERSION}( |\$)" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## ${VERSION}' section. Run 'uvx scriv collect --version $VERSION' and commit before tagging."
+            exit 1
+          fi
+
+          # scriv writes an `<a id='changelog-X'></a>` anchor line before each
+          # `## X` heading, so the section ends at the next anchor as well as
+          # the next heading. Blank lines are held back until more content
+          # follows, which drops leading and trailing blank lines.
+          NOTES_FILE="$(mktemp)"
+          awk -v ver="$VERSION" '
+            $0 ~ "^## "ver"( |$)" {flag=1; next}
+            flag && (/^## / || /^<a id=.changelog-/) {exit}
+            flag && /^[ \t\r]*$/ {blank++; next}
+            flag {
+              if (started) for (; blank > 0; blank--) print ""
+              blank = 0; started = 1
+              print
+            }
+          ' CHANGELOG.md > "$NOTES_FILE"
+          if ! grep -q '[^[:space:]]' "$NOTES_FILE"; then
+            echo "::error::The '## ${VERSION}' section of CHANGELOG.md is empty."
+            exit 1
+          fi
+          echo "notes_file=$NOTES_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Update floating major-version tag
+        uses: nowactions/update-majorver@v1
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file "${{ steps.changelog.outputs.notes_file }}"

@@ -1,0 +1,70 @@
+name: Label Dependabot Update Type
+
+# Applies a `dependencies-{major,minor,patch}` label to Dependabot PRs based on
+# the authoritative update type reported by dependabot/fetch-metadata.
+#
+# Why a separate workflow:
+# - fetch-metadata only works in `pull_request` context (it reads the
+#   Dependabot-authored commit metadata), where the GITHUB_TOKEN is scoped to
+#   the PR. The auto-merge workflow runs in `workflow_run` context (for security)
+#   and cannot use fetch-metadata, so it reads the label this workflow applies.
+# - Kept as a separate workflow/job so a labeling hiccup never fails CI or the
+#   dist/ rebuild push.
+#
+# The label is the input to dependabot-auto-merge.yml's fail-closed allowlist:
+# only `dependencies-patch` / `dependencies-minor` enable auto-merge. No label
+# (e.g. labeling failed) or `dependencies-major` ⇒ no auto-merge.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  pull-requests: write # add label to the PR
+  issues: write # create the label if it doesn't exist yet
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    # Author check AND triggering-actor check: dependabot/fetch-metadata only works
+    # inside a Dependabot-triggered run. On a maintainer's (or App's) push the actor
+    # isn't dependabot[bot], so the job skips cleanly instead of failing fetch-metadata
+    # with "PR is not from Dependabot". The label from the original Dependabot push
+    # already stands.
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.actor == 'dependabot[bot]'
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v3 # github-token defaults to github.token
+
+      - name: Apply semver label (fail-closed)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }} # e.g. version-update:semver-major
+        run: |
+          if [ -z "$UPDATE_TYPE" ]; then
+            echo "No update-type from fetch-metadata; not labeling (auto-merge stays disabled)."
+            exit 0
+          fi
+          SEMVER="${UPDATE_TYPE##*semver-}"   # major | minor | patch
+          LABEL="dependencies-$SEMVER"
+          case "$SEMVER" in
+            major) COLOR=D93F0B ;;
+            minor) COLOR=FBCA04 ;;
+            patch) COLOR=0E8A16 ;;
+            *)     COLOR=BFD4F2 ;;
+          esac
+          # idempotent create-if-missing
+          gh label create "$LABEL" --repo "$GITHUB_REPOSITORY" \
+            --color "$COLOR" --description "Dependabot semver update type" --force || true
+          # Drop stale semver labels from an earlier push (the PR may have been
+          # updated in place to a different update type). Removed before adding
+          # so a failure leaves the PR unlabeled (fail-closed). Tolerates a
+          # label that isn't on the PR or doesn't exist in the repo yet.
+          for STALE in dependencies-major dependencies-minor dependencies-patch; do
+            if [ "$STALE" != "$LABEL" ]; then
+              gh pr edit "$PR_URL" --remove-label "$STALE" || true
+            fi
+          done
+          gh pr edit "$PR_URL" --add-label "$LABEL"

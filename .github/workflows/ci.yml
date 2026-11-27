@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm biome ci .
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build bundle
+        run: pnpm build
+
+      - name: Verify dist/ is up to date
+        run: |
+          if ! git diff --exit-code dist/; then
+            echo "::error::dist/ is out of sync. Run \`pnpm build\` and commit the result."
+            exit 1
+          fi
+
+  # End-to-end smoke test: run the action from this checkout's committed dist/
+  # against roundtable-dev's Gafaelfawr, then present the token it returns back
+  # to Gafaelfawr. Exercises the real GitHub ID token request, Repertoire
+  # service discovery, and token exchange that the mocked unit tests cannot.
+  #
+  # Credentials: none are stored. The exchange requires `id-token: write` and a
+  # GitHub project for this repository registered in roundtable-dev's
+  # Gafaelfawr. The test does not depend on which scopes that project grants:
+  # it requests every scope of the project and checks that the action reports
+  # the scopes Gafaelfawr says the token has. Fork PRs never receive an ID
+  # token, so they are skipped.
+  token-smoke-test:
+    needs: build
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write # for the Gafaelfawr token exchange
+    env:
+      BASE_URL: https://roundtable-dev.lsst.cloud
+      BOT_USERNAME: bot-gh-lsst-sqre-gafaelfawr-token-action
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Get a Gafaelfawr token from roundtable-dev
+        id: gafaelfawr
+        uses: ./
+        with:
+          base-url: ${{ env.BASE_URL }}
+
+      - name: Check the token against Gafaelfawr
+        env:
+          TOKEN: ${{ steps.gafaelfawr.outputs.token }}
+          SCOPES: ${{ steps.gafaelfawr.outputs.scopes }}
+          EXPIRES_IN: ${{ steps.gafaelfawr.outputs.expires-in }}
+          EXPIRES_AT: ${{ steps.gafaelfawr.outputs.expires-at }}
+        run: |
+          echo "scopes=$SCOPES"
+          echo "expires-in=$EXPIRES_IN"
+          echo "expires-at=$EXPIRES_AT"
+          test -n "$TOKEN"
+          test "$EXPIRES_IN" -gt 0
+          expires_at=$(date -u -d "$EXPIRES_AT" +%s)
+          test "$expires_at" -gt "$(date -u +%s)"
+
+          # The token must authenticate to Gafaelfawr as this repository's bot
+          # user, and carry the scopes and expiration the action reported.
+          info=$(curl -fsS -H "Authorization: Bearer $TOKEN" "$BASE_URL/auth/api/v1/token-info")
+          echo "$info" | jq '{username, token_type, scopes, expires}'
+          test "$(echo "$info" | jq -r .username)" = "$BOT_USERNAME"
+          test "$(echo "$info" | jq -r .token_type)" = github
+          test "$(echo "$info" | jq -r '.scopes | sort | join(" ")')" \
+            = "$(echo "$SCOPES" | tr ' ' '\n' | sort | paste -sd ' ' -)"
+          # expires-at is computed on the runner, so allow for clock skew.
+          skew=$(( $(echo "$info" | jq -r .expires) - expires_at ))
+          test "${skew#-}" -le 60

@@ -1,0 +1,7 @@
+{# Template used by `scriv create`. -#}
+{% for category in config.categories %}
+### {{ category }}
+
+- A bullet item for {{ category }}.
+
+{% endfor %}
