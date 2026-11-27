@@ -139,6 +139,26 @@ The repository commits the bundled `dist/`, because GitHub runs the action strai
 
 CI also runs an end-to-end smoke test (`token-smoke-test` in `ci.yml`): it executes the action from the checkout's committed `dist/` against roundtable-dev's Gafaelfawr, then presents the token to Gafaelfawr's `token-info` route to check that it authenticates as this repository's bot user with the scopes and expiration the action reported. It depends on a GitHub project for `lsst-sqre/gafaelfawr-token-action` registered in roundtable-dev's Gafaelfawr, but not on which scopes that project grants. Fork PRs skip the job because they never receive an ID token.
 
+### Dependabot automation (Rubin Squarebot)
+
+The Dependabot automation workflows authenticate as the [**Rubin Squarebot** GitHub App](https://github.com/apps/rubin-squarebot) rather than the default `GITHUB_TOKEN`:
+
+- **`dependabot-build.yml`** rebuilds `dist/` on a Dependabot PR and pushes the result back to the PR branch. The push is made with the App token so that it re-triggers CI, which a `GITHUB_TOKEN` push would not.
+- **`dependabot-label.yml`** labels each Dependabot PR with its semver update type.
+- **`dependabot-auto-merge.yml`** enables squash auto-merge for patch and minor Dependabot PRs once CI is green.
+
+The App is identified by a non-sensitive client ID and authenticated with a private key:
+
+| Name | Kind | Used by |
+| ---- | ---- | ------- |
+| `CI_GH_APP_CLIENT_ID` | Actions **variable** | both workflows |
+| `CI_GH_APP_PRIVATE_KEY` | **Dependabot** secret | `dependabot-build.yml` (Dependabot `pull_request` context) |
+| `CI_GH_APP_PRIVATE_KEY` | **Actions** secret | `dependabot-auto-merge.yml` (`workflow_run` context, which cannot read Dependabot secrets) |
+
+The private key must be stored in both secret stores under the same name.
+
+To tell which of the App's keys this repository holds, both workflows start with a "Show App private key fingerprint" step that prints the key's fingerprint to the job log and summary. It is the same `SHA256:…` value that GitHub lists for each private key on the App's settings page, so a key can be matched there when it needs to be revoked or rotated. The fingerprint is a hash of the public half of the key and is not sensitive. The two workflows read different secret stores, so differing fingerprints mean the stores are out of sync.
+
 ### Releasing
 
 Changelog fragments accumulate in `changelog.d/` as work merges, and are collected into `CHANGELOG.md` with [scriv](https://scriv.readthedocs.io) as a prerequisite of each release. The scriv configuration lives in `changelog.d/scriv.ini`.
