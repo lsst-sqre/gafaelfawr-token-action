@@ -2,7 +2,7 @@ name: 'Gafaelfawr Token'
 description: 'Obtain a short-lived Gafaelfawr token for a Rubin Science Platform or Roundtable environment with GitHub Actions OIDC.'
 author: 'Rubin Observatory / SQuaRE'
 branding:
-  icon: 'key'
+  icon: 'lock'
   color: 'blue'
 inputs:
   base-url:
